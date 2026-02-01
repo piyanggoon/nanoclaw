@@ -31,6 +31,16 @@ When you learn something important:
 - Add recurring context directly to this CLAUDE.md
 - Always index new memory files at the top of CLAUDE.md
 
+## WhatsApp Formatting
+
+Do NOT use markdown headings (##) in WhatsApp messages. Only use:
+- *Bold* (asterisks)
+- _Italic_ (underscores)
+- • Bullets (bullet points)
+- ```Code blocks``` (triple backticks)
+
+Keep messages clean and readable for WhatsApp.
+
 ---
 
 ## Admin Context
@@ -145,7 +155,7 @@ Groups can have extra directories mounted. Add `containerConfig` to their entry:
     "containerConfig": {
       "additionalMounts": [
         {
-          "hostPath": "/Users/gavriel/projects/webapp",
+          "hostPath": "/Users/username/projects/webapp",
           "containerPath": "webapp",
           "readonly": false
         }
