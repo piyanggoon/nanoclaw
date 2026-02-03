@@ -5,7 +5,7 @@ import makeWASocket, {
   WASocket
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
-import { exec, execSync } from 'child_process';
+import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -322,7 +322,6 @@ async function processTaskIpc(
     name?: string;
     folder?: string;
     trigger?: string;
-    containerConfig?: RegisteredGroup['containerConfig'];
   },
   sourceGroup: string,  // Verified identity from IPC directory
   isMain: boolean       // Verified from directory path
@@ -459,8 +458,7 @@ async function processTaskIpc(
           name: data.name,
           folder: data.folder,
           trigger: data.trigger,
-          added_at: new Date().toISOString(),
-          containerConfig: data.containerConfig
+          added_at: new Date().toISOString()
         });
       } else {
         logger.warn({ data }, 'Invalid register_group request - missing required fields');
@@ -574,32 +572,7 @@ async function startMessageLoop(): Promise<void> {
   }
 }
 
-function ensureContainerSystemRunning(): void {
-  try {
-    execSync('container system status', { stdio: 'pipe' });
-    logger.debug('Apple Container system already running');
-  } catch {
-    logger.info('Starting Apple Container system...');
-    try {
-      execSync('container system start', { stdio: 'pipe', timeout: 30000 });
-      logger.info('Apple Container system started');
-    } catch (err) {
-      logger.error({ err }, 'Failed to start Apple Container system');
-      console.error('\n╔════════════════════════════════════════════════════════════════╗');
-      console.error('║  FATAL: Apple Container system failed to start                 ║');
-      console.error('║                                                                ║');
-      console.error('║  Agents cannot run without Apple Container. To fix:           ║');
-      console.error('║  1. Install from: https://github.com/apple/container/releases ║');
-      console.error('║  2. Run: container system start                               ║');
-      console.error('║  3. Restart NanoClaw                                          ║');
-      console.error('╚════════════════════════════════════════════════════════════════╝\n');
-      throw new Error('Apple Container system is required but failed to start');
-    }
-  }
-}
-
 async function main(): Promise<void> {
-  ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
   loadState();

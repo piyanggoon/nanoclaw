@@ -7,69 +7,27 @@ description: Run initial NanoClaw setup. Use when user wants to install dependen
 
 Run all commands automatically. Only pause when user action is required (scanning QR codes).
 
-## 1. Install Dependencies
+## 1. Install Host Dependencies
 
 ```bash
 npm install
 ```
 
-## 2. Install Container Runtime
+## 2. Build Agent Runner
 
-First, detect the platform and check what's available:
-
-```bash
-echo "Platform: $(uname -s)"
-which container && echo "Apple Container: installed" || echo "Apple Container: not installed"
-which docker && docker info >/dev/null 2>&1 && echo "Docker: installed and running" || echo "Docker: not installed or not running"
-```
-
-### If NOT on macOS (Linux, etc.)
-
-Apple Container is macOS-only. Use Docker instead.
-
-Tell the user:
-> You're on Linux, so we'll use Docker for container isolation. Let me set that up now.
-
-**Use the `/convert-to-docker` skill** to convert the codebase to Docker, then continue to Section 3.
-
-### If on macOS
-
-**If Apple Container is already installed:** Continue to Section 3.
-
-**If Apple Container is NOT installed:** Ask the user:
-> NanoClaw needs a container runtime for isolated agent execution. You have two options:
->
-> 1. **Apple Container** (default) - macOS-native, lightweight, designed for Apple silicon
-> 2. **Docker** - Cross-platform, widely used, works on macOS and Linux
->
-> Which would you prefer?
-
-#### Option A: Apple Container
-
-Tell the user:
-> Apple Container is required for running agents in isolated environments.
->
-> 1. Download the latest `.pkg` from https://github.com/apple/container/releases
-> 2. Double-click to install
-> 3. Run `container system start` to start the service
->
-> Let me know when you've completed these steps.
-
-Wait for user confirmation, then verify:
+The agent runner is a separate TypeScript project that executes Claude Agent SDK as a subprocess.
 
 ```bash
-container system start
-container --version
+cd container/agent-runner
+npm install
+npx tsc
 ```
 
-**Note:** NanoClaw automatically starts the Apple Container system when it launches, so you don't need to start it manually after reboots.
+Verify the build produced output:
 
-#### Option B: Docker
-
-Tell the user:
-> You've chosen Docker. Let me set that up now.
-
-**Use the `/convert-to-docker` skill** to convert the codebase to Docker, then continue to Section 3.
+```bash
+ls container/agent-runner/dist/index.js && echo "Agent runner built successfully" || echo "BUILD FAILED"
+```
 
 ## 3. Configure Claude Authentication
 
@@ -117,27 +75,7 @@ KEY=$(grep "^ANTHROPIC_API_KEY=" .env | cut -d= -f2)
 [ -n "$KEY" ] && echo "API key configured: ${KEY:0:10}...${KEY: -4}" || echo "Missing"
 ```
 
-## 4. Build Container Image
-
-Build the NanoClaw agent container:
-
-```bash
-./container/build.sh
-```
-
-This creates the `nanoclaw-agent:latest` image with Node.js, Chromium, Claude Code CLI, and agent-browser.
-
-Verify the build succeeded by running a simple test (this auto-detects which runtime you're using):
-
-```bash
-if which docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-  echo '{}' | docker run -i --entrypoint /bin/echo nanoclaw-agent:latest "Container OK" || echo "Container build failed"
-else
-  echo '{}' | container run -i --entrypoint /bin/echo nanoclaw-agent:latest "Container OK" || echo "Container build failed"
-fi
-```
-
-## 5. WhatsApp Authentication
+## 4. WhatsApp Authentication
 
 **USER ACTION REQUIRED**
 
@@ -157,7 +95,7 @@ Wait for the script to output "Successfully authenticated" then continue.
 
 If it says "Already authenticated", skip to the next step.
 
-## 6. Configure Assistant Name
+## 5. Configure Assistant Name
 
 Ask the user:
 > What trigger word do you want to use? (default: `Andy`)
@@ -171,7 +109,7 @@ If they choose something other than `Andy`, update it in these places:
 
 Store their choice - you'll use it when creating the registered_groups.json and when telling them how to test.
 
-## 7. Register Main Channel
+## 6. Register Main Channel
 
 Ask the user:
 > Do you want to use your **personal chat** (message yourself) or a **WhatsApp group** as your main control channel?
@@ -215,121 +153,22 @@ Ensure the groups folder exists:
 mkdir -p groups/main/logs
 ```
 
-## 8. Configure External Directory Access (Mount Allowlist)
+## 7. Build & Configure launchd Service
 
-Ask the user:
-> Do you want the agent to be able to access any directories **outside** the NanoClaw project?
->
-> Examples: Git repositories, project folders, documents you want Claude to work on.
->
-> **Note:** This is optional. Without configuration, agents can only access their own group folders.
-
-If **no**, create an empty allowlist to make this explicit:
+Build the host TypeScript:
 
 ```bash
-mkdir -p ~/.config/nanoclaw
-cat > ~/.config/nanoclaw/mount-allowlist.json << 'EOF'
-{
-  "allowedRoots": [],
-  "blockedPatterns": [],
-  "nonMainReadOnly": true
-}
-EOF
-echo "Mount allowlist created - no external directories allowed"
+npm run build
 ```
 
-Skip to the next step.
-
-If **yes**, ask follow-up questions:
-
-### 8a. Collect Directory Paths
-
-Ask the user:
-> Which directories do you want to allow access to?
->
-> You can specify:
-> - A parent folder like `~/projects` (allows access to anything inside)
-> - Specific paths like `~/repos/my-app`
->
-> List them one per line, or give me a comma-separated list.
-
-For each directory they provide, ask:
-> Should `[directory]` be **read-write** (agents can modify files) or **read-only**?
->
-> Read-write is needed for: code changes, creating files, git commits
-> Read-only is safer for: reference docs, config examples, templates
-
-### 8b. Configure Non-Main Group Access
-
-Ask the user:
-> Should **non-main groups** (other WhatsApp chats you add later) be restricted to **read-only** access even if read-write is allowed for the directory?
->
-> Recommended: **Yes** - this prevents other groups from modifying files even if you grant them access to a directory.
-
-### 8c. Create the Allowlist
-
-Create the allowlist file based on their answers:
-
-```bash
-mkdir -p ~/.config/nanoclaw
-```
-
-Then write the JSON file. Example for a user who wants `~/projects` (read-write) and `~/docs` (read-only) with non-main read-only:
-
-```bash
-cat > ~/.config/nanoclaw/mount-allowlist.json << 'EOF'
-{
-  "allowedRoots": [
-    {
-      "path": "~/projects",
-      "allowReadWrite": true,
-      "description": "Development projects"
-    },
-    {
-      "path": "~/docs",
-      "allowReadWrite": false,
-      "description": "Reference documents"
-    }
-  ],
-  "blockedPatterns": [],
-  "nonMainReadOnly": true
-}
-EOF
-```
-
-Verify the file:
-
-```bash
-cat ~/.config/nanoclaw/mount-allowlist.json
-```
-
-Tell the user:
-> Mount allowlist configured. The following directories are now accessible:
-> - `~/projects` (read-write)
-> - `~/docs` (read-only)
->
-> **Security notes:**
-> - Sensitive paths (`.ssh`, `.gnupg`, `.aws`, credentials) are always blocked
-> - This config file is stored outside the project, so agents cannot modify it
-> - Changes require restarting the NanoClaw service
->
-> To grant a group access to a directory, add it to their config in `data/registered_groups.json`:
-> ```json
-> "containerConfig": {
->   "additionalMounts": [
->     { "hostPath": "~/projects/my-app", "containerPath": "my-app", "readonly": false }
->   ]
-> }
-> ```
-
-## 9. Configure launchd Service
-
-Generate the plist file with correct paths automatically:
+Generate the plist file with correct paths:
 
 ```bash
 NODE_PATH=$(which node)
 PROJECT_PATH=$(pwd)
 HOME_PATH=$HOME
+
+mkdir -p logs
 
 cat > ~/Library/LaunchAgents/com.nanoclaw.plist << EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -369,11 +208,9 @@ echo "  Node: ${NODE_PATH}"
 echo "  Project: ${PROJECT_PATH}"
 ```
 
-Build and start the service:
+Start the service:
 
 ```bash
-npm run build
-mkdir -p logs
 launchctl load ~/Library/LaunchAgents/com.nanoclaw.plist
 ```
 
@@ -382,7 +219,7 @@ Verify it's running:
 launchctl list | grep nanoclaw
 ```
 
-## 11. Test
+## 8. Test
 
 Tell the user (using the assistant name they configured):
 > Send `@ASSISTANT_NAME hello` in your registered chat.
@@ -398,16 +235,18 @@ The user should receive a response in WhatsApp.
 
 **Service not starting**: Check `logs/nanoclaw.error.log`
 
-**Container agent fails with "Claude Code process exited with code 1"**:
-- Ensure the container runtime is running:
-  - Apple Container: `container system start`
-  - Docker: `docker info` (start Docker Desktop on macOS, or `sudo systemctl start docker` on Linux)
-- Check container logs: `cat groups/main/logs/container-*.log | tail -50`
+**Agent fails with "Claude Code process exited with code 1"**:
+- Check agent logs: `cat groups/main/logs/agent-*.log | tail -50`
+- Ensure `.env` file has valid `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`
 
 **No response to messages**:
 - Verify the trigger pattern matches (e.g., `@AssistantName` at start of message)
 - Check that the chat JID is in `data/registered_groups.json`
 - Check `logs/nanoclaw.log` for errors
+
+**Agent runner not found**:
+- Ensure agent runner is built: `ls container/agent-runner/dist/index.js`
+- If missing, rebuild: `cd container/agent-runner && npm install && npx tsc`
 
 **WhatsApp disconnected**:
 - The service will show a macOS notification

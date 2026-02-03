@@ -1,12 +1,16 @@
 /**
  * NanoClaw Agent Runner
- * Runs inside a container, receives config via stdin, outputs result to stdout
+ * Runs as a subprocess, receives config via stdin, outputs result to stdout
  */
 
 import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { createIpcMcp } from './ipc-mcp.js';
+
+// Paths are provided via environment variables by the host process
+const WORKSPACE_GROUP = process.env.WORKSPACE_GROUP || '/workspace/group';
+const WORKSPACE_GLOBAL = process.env.WORKSPACE_GLOBAL || '/workspace/global';
 
 interface ContainerInput {
   prompt: string;
@@ -107,7 +111,7 @@ function createPreCompactHook(): HookCallback {
       const summary = getSessionSummary(sessionId, transcriptPath);
       const name = summary ? sanitizeFilename(summary) : generateFallbackName();
 
-      const conversationsDir = '/workspace/group/conversations';
+      const conversationsDir = path.join(WORKSPACE_GROUP, 'conversations');
       fs.mkdirSync(conversationsDir, { recursive: true });
 
       const date = new Date().toISOString().split('T')[0];
@@ -237,7 +241,7 @@ async function main(): Promise<void> {
     for await (const message of query({
       prompt,
       options: {
-        cwd: '/workspace/group',
+        cwd: WORKSPACE_GROUP,
         resume: input.sessionId,
         allowedTools: [
           'Bash',

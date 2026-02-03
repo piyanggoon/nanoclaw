@@ -6,114 +6,75 @@
 |--------|-------------|-----------|
 | Main group | Trusted | Private self-chat, admin control |
 | Non-main groups | Untrusted | Other users may be malicious |
-| Container agents | Sandboxed | Isolated execution environment |
+| Agent subprocesses | Semi-trusted | Run on host with limited scope |
 | WhatsApp messages | User input | Potential prompt injection |
 
 ## Security Boundaries
 
-### 1. Container Isolation (Primary Boundary)
+### 1. Per-Group Isolation
 
-Agents execute in Apple Container (lightweight Linux VMs), providing:
-- **Process isolation** - Container processes cannot affect the host
-- **Filesystem isolation** - Only explicitly mounted directories are visible
-- **Non-root execution** - Runs as unprivileged `node` user (uid 1000)
-- **Ephemeral containers** - Fresh environment per invocation (`--rm`)
+Each group operates in its own context:
+- **Separate working directory** - Each group has its own folder under `groups/`
+- **Separate IPC namespace** - Each group has its own IPC directory under `data/ipc/{folder}/`
+- **Separate session storage** - Each group has isolated Claude sessions at `data/sessions/{group}/.claude/`
+- Groups cannot see other groups' conversation history or IPC messages
 
-This is the primary security boundary. Rather than relying on application-level permission checks, the attack surface is limited by what's mounted.
-
-### 2. Mount Security
-
-**External Allowlist** - Mount permissions stored at `~/.config/nanoclaw/mount-allowlist.json`, which is:
-- Outside project root
-- Never mounted into containers
-- Cannot be modified by agents
-
-**Default Blocked Patterns:**
-```
-.ssh, .gnupg, .aws, .azure, .gcloud, .kube, .docker,
-credentials, .env, .netrc, .npmrc, id_rsa, id_ed25519,
-private_key, .secret
-```
-
-**Protections:**
-- Symlink resolution before validation (prevents traversal attacks)
-- Container path validation (rejects `..` and absolute paths)
-- `nonMainReadOnly` option forces read-only for non-main groups
-
-### 3. Session Isolation
-
-Each group has isolated Claude sessions at `data/sessions/{group}/.claude/`:
-- Groups cannot see other groups' conversation history
-- Session data includes full message history and file contents read
-- Prevents cross-group information disclosure
-
-### 4. IPC Authorization
+### 2. IPC Authorization
 
 Messages and task operations are verified against group identity:
 
 | Operation | Main Group | Non-Main Group |
 |-----------|------------|----------------|
-| Send message to own chat | ✓ | ✓ |
-| Send message to other chats | ✓ | ✗ |
-| Schedule task for self | ✓ | ✓ |
-| Schedule task for others | ✓ | ✗ |
-| View all tasks | ✓ | Own only |
-| Manage other groups | ✓ | ✗ |
+| Send message to own chat | Yes | Yes |
+| Send message to other chats | Yes | No |
+| Schedule task for self | Yes | Yes |
+| Schedule task for others | Yes | No |
+| View all tasks | Yes | Own only |
+| Manage other groups | Yes | No |
 
-### 5. Credential Handling
+### 3. Credential Handling
 
-**Mounted Credentials:**
-- Claude auth tokens (filtered from `.env`, read-only)
+**Available to agents:**
+- Claude auth tokens (inherited from host environment)
 
-**NOT Mounted:**
-- WhatsApp session (`store/auth/`) - host only
-- Mount allowlist - external, never mounted
-- Any credentials matching blocked patterns
+**NOT available to agents:**
+- WhatsApp session (`store/auth/`) - host process only
 
-**Credential Filtering:**
-Only these environment variables are exposed to containers:
-```typescript
-const allowedVars = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'];
-```
-
-> **Note:** Anthropic credentials are mounted so that Claude Code can authenticate when the agent runs. However, this means the agent itself can discover these credentials via Bash or file operations. Ideally, Claude Code would authenticate without exposing credentials to the agent's execution environment, but I couldn't figure this out. **PRs welcome** if you have ideas for credential isolation.
+> **Note:** Anthropic credentials are available in the subprocess environment so that Claude Code can authenticate. The agent itself can discover these credentials via environment inspection. **PRs welcome** if you have ideas for credential isolation.
 
 ## Privilege Comparison
 
 | Capability | Main Group | Non-Main Group |
 |------------|------------|----------------|
-| Project root access | `/workspace/project` (rw) | None |
-| Group folder | `/workspace/group` (rw) | `/workspace/group` (rw) |
-| Global memory | Implicit via project | `/workspace/global` (ro) |
-| Additional mounts | Configurable | Read-only unless allowed |
+| Project root access | Yes (via WORKSPACE_PROJECT env) | No |
+| Group folder | Read-write | Read-write (own only) |
+| Global memory | Read-write | Read-only |
 | Network access | Unrestricted | Unrestricted |
 | MCP tools | All | All |
 
 ## Security Architecture Diagram
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        UNTRUSTED ZONE                             │
-│  WhatsApp Messages (potentially malicious)                        │
-└────────────────────────────────┬─────────────────────────────────┘
-                                 │
-                                 ▼ Trigger check, input escaping
-┌──────────────────────────────────────────────────────────────────┐
-│                     HOST PROCESS (TRUSTED)                        │
-│  • Message routing                                                │
-│  • IPC authorization                                              │
-│  • Mount validation (external allowlist)                          │
-│  • Container lifecycle                                            │
-│  • Credential filtering                                           │
-└────────────────────────────────┬─────────────────────────────────┘
-                                 │
-                                 ▼ Explicit mounts only
-┌──────────────────────────────────────────────────────────────────┐
-│                CONTAINER (ISOLATED/SANDBOXED)                     │
-│  • Agent execution                                                │
-│  • Bash commands (sandboxed)                                      │
-│  • File operations (limited to mounts)                            │
-│  • Network access (unrestricted)                                  │
-│  • Cannot modify security config                                  │
-└──────────────────────────────────────────────────────────────────┘
++------------------------------------------------------------------+
+|                        UNTRUSTED ZONE                             |
+|  WhatsApp Messages (potentially malicious)                        |
++--------------------------------+---------------------------------+
+                                 |
+                                 v  Trigger check, input escaping
++------------------------------------------------------------------+
+|                     HOST PROCESS (TRUSTED)                        |
+|  - Message routing                                                |
+|  - IPC authorization                                              |
+|  - Agent lifecycle                                                |
+|  - Credential management                                          |
++--------------------------------+---------------------------------+
+                                 |
+                                 v  Env vars: paths, credentials
++------------------------------------------------------------------+
+|                   AGENT SUBPROCESS (SEMI-TRUSTED)                 |
+|  - Agent execution (Claude Agent SDK)                             |
+|  - Bash commands (runs on host)                                   |
+|  - File operations (scoped to group directory)                    |
+|  - Network access (unrestricted)                                  |
++------------------------------------------------------------------+
 ```
